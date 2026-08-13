@@ -200,13 +200,17 @@ final class ShelfRootView: NSView {
 
         if store.dragMode == .simplify, !store.items.isEmpty {
             scrollView.hasVerticalScroller = false
+            // Unconditional, and BEFORE the insert. The grid reads store.items once during its own
+            // init, so a cached instance can never show a later drop; and invalidating afterwards
+            // tore out the grid that had just been inserted, leaving a panel sized for N items with
+            // nothing in it. There is only ever one grid view, so rebuilding it costs nothing.
+            invalidateRowCache()
             applyRows(keys: ["simplify-grid"]) { _ in
                 let grid = ShelfSimplifyGridView(store: store)
                 let height = grid.preferredHeight(forWidth: max(scrollView.contentView.bounds.width, 320))
                 grid.heightAnchor.constraint(equalToConstant: height).isActive = true
                 return grid
             }
-            if modeChanged { invalidateRowCache() }
             return
         }
 
@@ -397,7 +401,10 @@ private final class ShelfSimplifyGridView: NSView, NSDraggingSource {
         guard !didStartDrag else { return }
         didStartDrag = true
 
-        let draggingItems = store.itemsForDrag(startingWith: store.items[0])
+        // The grid can outlive the items it was built from by one run-loop turn after a clear,
+        // so this must not subscript store.items.
+        guard let first = store.items.first else { return }
+        let draggingItems = store.itemsForDrag(startingWith: first)
             .enumerated()
             .compactMap { makeDraggingItem(for: $0.element, index: $0.offset) }
         guard !draggingItems.isEmpty else { return }

@@ -42,6 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         store.captureRecentSnapshotIfNeeded()
-        store.save()
+        store.saveNow()
     }
 }

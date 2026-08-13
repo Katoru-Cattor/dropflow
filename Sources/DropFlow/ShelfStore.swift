@@ -59,6 +59,14 @@ final class ShelfStore {
         }
     }
 
+    /// Enqueues a save and waits for it to land. Use at quit: `save()` alone returns before the
+    /// write happens, so the process can exit first — two 0-byte atomic-write sidecars in the
+    /// support directory are writes that started this way and never finished.
+    func saveNow() {
+        save()
+        saveQueue.sync {}
+    }
+
     private func scheduleSave() {
         guard !pendingSave else { return }
         pendingSave = true
@@ -298,6 +306,13 @@ final class ShelfStore {
     }
 
     private var appSupportURL: URL {
+        // DROPFLOW_SUPPORT_DIR exists so a test harness can point persistence somewhere disposable.
+        // Setting HOME is NOT enough: -[NSFileManager URLsForDirectory:] resolves the home directory
+        // through the password database, so a harness that only overrides HOME writes straight into
+        // the real ~/Library/Application Support/DropFlow and destroys the user's shelf.
+        if let override = ProcessInfo.processInfo.environment["DROPFLOW_SUPPORT_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("DropFlow", isDirectory: true)

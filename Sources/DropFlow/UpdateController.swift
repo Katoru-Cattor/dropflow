@@ -170,6 +170,7 @@ final class UpdateController {
         showProgress("Downloading DropFlow \(release.version)…")
         var mountPoint: URL?
         var downloaded: URL?
+        var stagedCopy: URL?
         do {
             let file = try await Self.download(dmgURL)
             downloaded = file
@@ -188,8 +189,8 @@ final class UpdateController {
             // Stage inside the destination's own directory so the final swap is a rename
             // on one volume rather than a cross-volume copy.
             let staged = parent.appendingPathComponent(".DropFlow-update-\(UUID().uuidString).app")
+            stagedCopy = staged
             try FileManager.default.copyItem(at: newApp, to: staged)
-            defer { try? FileManager.default.removeItem(at: staged) }
 
             // The copy inherits com.apple.quarantine from the .dmg. Its SHA-256 has just
             // been matched against the published hash, so clear it — otherwise Gatekeeper
@@ -197,7 +198,10 @@ final class UpdateController {
             _ = try? await Self.runTool("/usr/bin/xattr", ["-dr", "com.apple.quarantine", staged.path])
             try await Self.verifyCodeSignature(of: staged)
 
-            _ = try? FileManager.default.replaceItemAt(destination, withItemAt: staged)
+            // Not `try?`: if the swap fails we must not tell the user the update installed and then
+            // relaunch them into the old build with the .dmg already deleted.
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
+            stagedCopy = nil
             try? await Self.detach(mount)
             mountPoint = nil
             try? FileManager.default.removeItem(at: file)
@@ -208,6 +212,10 @@ final class UpdateController {
         } catch {
             if let mount = mountPoint { try? await Self.detach(mount) }
             if let file = downloaded { try? FileManager.default.removeItem(at: file) }
+            // Explicit, not `defer`: relaunch() ends in NSApp.terminate, which never returns and so
+            // never runs defers. A stranded multi-megabyte .DropFlow-update-*.app is invisible in
+            // Finder because of the leading dot.
+            if let staged = stagedCopy { try? FileManager.default.removeItem(at: staged) }
             hideProgress()
             presentError(error)
         }

@@ -27,9 +27,10 @@ final class ShelfWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.contentView = ShelfRootView(store: store)
         super.init(window: window)
-        window.willHide = { [weak self] in
-            self?.store.clearShelf()
-        }
+        // Deliberately NOT wiring willHide to clearShelf. Hiding the panel — via Cmd-Opt-Space, the
+        // header's "Hide Shelf" button, or the menu's Toggle Shelf — used to destroy the shelf,
+        // which is not what any of those three labels promise. Clearing now happens only from the
+        // trash button and the Clear Shelf menu item.
         NotificationCenter.default.addObserver(self, selector: #selector(storeDidChange), name: .shelfStoreDidChange, object: store)
         resizeForCurrentMode(animated: false)
     }
