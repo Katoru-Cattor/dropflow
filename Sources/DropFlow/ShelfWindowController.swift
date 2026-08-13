@@ -6,10 +6,10 @@ final class ShelfWindowController: NSWindowController {
 
     init(store: ShelfStore) {
         self.store = store
-        let size = NSSize(width: 390, height: 440)
+        let size = NSSize(width: 332, height: 200)
         let window = ShelfPanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -17,20 +17,29 @@ final class ShelfWindowController: NSWindowController {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isOpaque = false
-        window.backgroundColor = .windowBackgroundColor
+        // Must be .clear: an opaque window background paints the full square frame, so the
+        // content view's rounded corners sit on grey squares and the radius reads as fake.
+        window.backgroundColor = .clear
         window.hasShadow = true
         window.hidesOnDeactivate = false
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = true
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.contentView = ShelfRootView(store: store)
         super.init(window: window)
+        window.willHide = { [weak self] in
+            self?.store.clearShelf()
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(storeDidChange), name: .shelfStoreDidChange, object: store)
         resizeForCurrentMode(animated: false)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     func showNearCursor() {
@@ -57,12 +66,16 @@ final class ShelfWindowController: NSWindowController {
         guard let window else { return }
 
         let targetContentSize: NSSize
-        if store.dragMode == .simplify, !store.items.isEmpty {
+        if store.items.isEmpty {
+            targetContentSize = NSSize(width: 332, height: 200)
+        } else if store.dragMode == .simplify {
             let rows = max(1, Int(ceil(Double(min(store.items.count, 12)) / 4.0)))
             let contentHeight = 76 + CGFloat(rows) * 58 + CGFloat(max(rows - 1, 0)) * 10 + 34
             targetContentSize = NSSize(width: 332, height: min(max(contentHeight, 188), 330))
         } else {
-            targetContentSize = NSSize(width: 390, height: 440)
+            let rows = max(1, min(store.items.count, 8))
+            let contentHeight = 76 + CGFloat(rows) * 64 + CGFloat(max(rows - 1, 0)) * 8 + 24
+            targetContentSize = NSSize(width: 360, height: min(max(contentHeight, 200), 440))
         }
 
         let currentContentSize = window.contentView?.bounds.size ?? .zero
@@ -99,13 +112,22 @@ final class ShelfWindowController: NSWindowController {
 }
 
 private final class ShelfPanel: NSPanel {
+    var willHide: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
+        if !isKeyWindow, event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
             makeKey()
         }
         super.sendEvent(event)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        if isVisible {
+            willHide?()
+        }
+        super.orderOut(sender)
     }
 }

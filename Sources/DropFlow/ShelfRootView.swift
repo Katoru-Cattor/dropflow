@@ -9,6 +9,10 @@ final class ShelfRootView: NSView {
     private let stackView = NSStackView()
     private let emptyLabel = NSTextField(labelWithString: "Drop files, folders, URLs, text, or images here")
     private let scrollView = NSScrollView()
+    private var rowKeySequence: [String] = []
+    private var rowViewsByKey: [String: NSView] = [:]
+    private var lastDragMode: ShelfDragMode?
+    private var rebuildScheduled = false
 
     init(store: ShelfStore) {
         self.store = store
@@ -17,6 +21,10 @@ final class ShelfRootView: NSView {
         setup()
         rebuildRows()
         NotificationCenter.default.addObserver(self, selector: #selector(storeDidChange), name: .shelfStoreDidChange, object: store)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) {
@@ -30,11 +38,15 @@ final class ShelfRootView: NSView {
     private func setup() {
         wantsLayer = true
         layer?.cornerRadius = 16
+        // .continuous is the squircle macOS itself uses; a plain circular arc is what makes a
+        // panel corner look "off" next to real system windows.
+        layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.94).cgColor
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
 
+        // No layer backgroundColor here: the vibrancy view below is the fill. A 94%-opaque
+        // colour on top of it cancelled the blur it was paying for.
         let visualEffect = NSVisualEffectView()
         visualEffect.material = .hudWindow
         visualEffect.blendingMode = .behindWindow
@@ -56,6 +68,10 @@ final class ShelfRootView: NSView {
 
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        // Legacy scrollers reserve a permanent gutter, so an empty shelf showed a scrollbar
+        // track with nothing to scroll. Overlay scrollers appear only while scrolling.
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
         scrollView.documentView = stackView
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         dropView.addSubview(scrollView)
@@ -164,34 +180,107 @@ final class ShelfRootView: NSView {
     }
 
     @objc private func storeDidChange() {
-        rebuildRows()
+        guard !rebuildScheduled else { return }
+        rebuildScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.rebuildScheduled = false
+                self.rebuildRows()
+            }
+        }
     }
 
     private func rebuildRows() {
-        stackView.arrangedSubviews.forEach { view in
-            stackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
         countLabel.stringValue = store.items.isEmpty ? "Ready" : "\(store.items.count) item\(store.items.count == 1 ? "" : "s")"
         emptyLabel.isHidden = !store.items.isEmpty
 
+        let modeChanged = lastDragMode != store.dragMode
+        lastDragMode = store.dragMode
+
         if store.dragMode == .simplify, !store.items.isEmpty {
             scrollView.hasVerticalScroller = false
-            let grid = ShelfSimplifyGridView(store: store)
-            let height = grid.preferredHeight(forWidth: max(scrollView.contentView.bounds.width, 320))
-            grid.heightAnchor.constraint(equalToConstant: height).isActive = true
-            stackView.addArrangedSubview(grid)
-        } else {
-            scrollView.hasVerticalScroller = true
-            for group in store.displayGroups() {
-                let row: NSView = group.isStack
-                    ? ShelfStackRowView(group: group, store: store)
-                    : ShelfItemRowView(item: group.items[0], store: store)
-                row.heightAnchor.constraint(greaterThanOrEqualToConstant: 74).isActive = true
-                stackView.addArrangedSubview(row)
+            applyRows(keys: ["simplify-grid"]) { _ in
+                let grid = ShelfSimplifyGridView(store: store)
+                let height = grid.preferredHeight(forWidth: max(scrollView.contentView.bounds.width, 320))
+                grid.heightAnchor.constraint(equalToConstant: height).isActive = true
+                return grid
+            }
+            if modeChanged { invalidateRowCache() }
+            return
+        }
+
+        scrollView.hasVerticalScroller = true
+        let groups = store.displayGroups()
+        var keys: [String] = []
+        keys.reserveCapacity(groups.count)
+        var groupByKey: [String: ShelfDisplayGroup] = [:]
+        for group in groups {
+            let key = rowKey(for: group)
+            keys.append(key)
+            groupByKey[key] = group
+        }
+
+        if modeChanged { invalidateRowCache() }
+
+        applyRows(keys: keys) { key in
+            guard let group = groupByKey[key] else { return NSView() }
+            let row: NSView = group.isStack
+                ? ShelfStackRowView(group: group, store: store)
+                : ShelfItemRowView(item: group.items[0], store: store)
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 74).isActive = true
+            return row
+        }
+    }
+
+    private func rowKey(for group: ShelfDisplayGroup) -> String {
+        if group.isStack {
+            let selected = store.selectedIDs.intersection(group.items.map(\.id)).count > 0 ? "1" : "0"
+            return "stack-\(group.id.uuidString)-\(group.items.count)-\(selected)"
+        }
+        let item = group.items[0]
+        let selected = store.selectedIDs.contains(item.id) ? "1" : "0"
+        return "item-\(item.id.uuidString)-\(item.lastResolvedState.rawValue)-\(selected)"
+    }
+
+    private func applyRows(keys: [String], makeRow: (String) -> NSView) {
+        let existing = Set(rowKeySequence)
+        let desired = Set(keys)
+
+        for key in existing.subtracting(desired) {
+            if let view = rowViewsByKey.removeValue(forKey: key) {
+                stackView.removeArrangedSubview(view)
+                view.removeFromSuperview()
             }
         }
+
+        for (index, key) in keys.enumerated() {
+            let view: NSView
+            if let cached = rowViewsByKey[key] {
+                view = cached
+            } else {
+                view = makeRow(key)
+                rowViewsByKey[key] = view
+            }
+            if index < stackView.arrangedSubviews.count, stackView.arrangedSubviews[index] === view {
+                continue
+            }
+            if view.superview === stackView {
+                stackView.removeArrangedSubview(view)
+            }
+            stackView.insertArrangedSubview(view, at: index)
+        }
+
+        rowKeySequence = keys
+    }
+
+    private func invalidateRowCache() {
+        for view in rowViewsByKey.values {
+            stackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        rowViewsByKey.removeAll()
+        rowKeySequence.removeAll()
     }
 
     @objc private func changeDragMode(_ sender: NSSegmentedControl) {

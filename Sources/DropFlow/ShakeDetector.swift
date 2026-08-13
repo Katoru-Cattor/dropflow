@@ -12,24 +12,40 @@ final class ShakeDetector {
     private var lastDirection: CGFloat = 0
     private var turns: [Date] = []
     private var lastActivation = Date.distantPast
+    private var leftButtonWasDown = false
+    private var dragPasteboardCountAtPress: Int = 0
+    private let dragPasteboard = NSPasteboard(name: .drag)
 
     init(action: @escaping () -> Void) {
         self.action = action
     }
 
+    isolated deinit {
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        if let eventTap {
+            CFMachPortInvalidate(eventTap)
+        }
+        pollTimer?.invalidate()
+    }
+
     func start() {
         stop()
-        startCursorPolling()
 
-        guard Self.isAccessibilityTrusted else { return }
-        startEventTap()
+        if Self.isAccessibilityTrusted {
+            startEventTap()
+        } else {
+            startCursorPolling()
+        }
     }
 
     private func startCursorPolling() {
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
                 let isDragging = (NSEvent.pressedMouseButtons & 1) == 1
-                self?.handle(point: NSEvent.mouseLocation, isDragging: isDragging)
+                self.handle(point: NSEvent.mouseLocation, isDragging: isDragging)
             }
         }
         pollTimer = timer
@@ -38,7 +54,6 @@ final class ShakeDetector {
 
     private func startEventTap() {
         let mask =
-            (1 << CGEventType.mouseMoved.rawValue) |
             (1 << CGEventType.leftMouseDragged.rawValue) |
             (1 << CGEventType.rightMouseDragged.rawValue) |
             (1 << CGEventType.otherMouseDragged.rawValue)
@@ -59,9 +74,8 @@ final class ShakeDetector {
                     return Unmanaged.passUnretained(event)
                 }
                 let point = event.location
-                let isDragging = type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged
                 Task { @MainActor in
-                    detector.handle(point: point, isDragging: isDragging)
+                    detector.handle(point: point, isDragging: true)
                 }
                 return Unmanaged.passUnretained(event)
             },
@@ -126,10 +140,26 @@ final class ShakeDetector {
     }
 
     private func handle(point: NSPoint, isDragging: Bool) {
-        defer { lastPoint = point }
+        defer {
+            lastPoint = point
+            leftButtonWasDown = isDragging
+        }
+        if isDragging && !leftButtonWasDown {
+            dragPasteboardCountAtPress = dragPasteboard.changeCount
+        }
         guard isDragging else {
-            lastDirection = 0
-            turns.removeAll()
+            if lastDirection != 0 || !turns.isEmpty {
+                lastDirection = 0
+                turns.removeAll()
+            }
+            return
+        }
+        let currentDragCount = dragPasteboard.changeCount
+        guard currentDragCount != dragPasteboardCountAtPress else {
+            if lastDirection != 0 || !turns.isEmpty {
+                lastDirection = 0
+                turns.removeAll()
+            }
             return
         }
         guard let previous = lastPoint else { return }
@@ -151,8 +181,6 @@ final class ShakeDetector {
         guard turns.count >= 5, Date().timeIntervalSince(lastActivation) > 1.8 else { return }
         turns.removeAll()
         lastActivation = Date()
-        DispatchQueue.main.async {
-            self.action()
-        }
+        action()
     }
 }

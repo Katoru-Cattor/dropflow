@@ -75,14 +75,16 @@ enum PasteboardReader {
     }
 
     private static func readImage(from item: NSPasteboardItem, imageDirectory: URL) -> ShelfItem? {
-        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
-        guard let type = imageTypes.first(where: { item.data(forType: $0) != nil }),
-              let data = item.data(forType: type),
-              let image = NSImage(data: data),
-              let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:])
-        else { return nil }
+        let pngData: Data
+        if let raw = item.data(forType: .png) {
+            pngData = raw
+        } else if let tiff = item.data(forType: .tiff),
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let encoded = bitmap.representation(using: .png, properties: [:]) {
+            pngData = encoded
+        } else {
+            return nil
+        }
 
         do {
             try FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)

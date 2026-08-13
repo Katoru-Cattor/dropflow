@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private var hotkeyController: HotkeyController?
     private var shakeDetector: ShakeDetector?
+    private let updateController = UpdateController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.load()
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ShakeDetector.requestAccessibilityPermission()
                 self?.shakeDetector?.start()
             },
+            checkForUpdates: { [weak self] in self?.updateController.checkForUpdates() },
             quit: { NSApp.terminate(nil) }
         ))
 
@@ -35,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shakeDetector?.start()
 
         shelfWindowController.showNearCursor()
+        updateController.checkInBackgroundIfDue()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

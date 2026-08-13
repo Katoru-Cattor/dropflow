@@ -2,14 +2,6 @@
 
 DropFlow is a native macOS temporary drag shelf built with SwiftPM and AppKit.
 
-Status: done for now / personal MVP complete.
-
-## Project Location
-
-```sh
-/Users/weihao/Documents/My Tool/FLOW APP/DropFlow
-```
-
 ## What It Does
 
 - Lives in the macOS menu bar with an icon-only status item.

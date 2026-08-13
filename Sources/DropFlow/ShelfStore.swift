@@ -15,6 +15,9 @@ final class ShelfStore {
     private let maxSnapshots = 10
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let saveQueue = DispatchQueue(label: "com.dropflow.shelfstore.save", qos: .utility)
+    private var pendingSave = false
+    private var resolvedURLCache: [UUID: URL] = [:]
 
     init() {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -32,6 +35,7 @@ final class ShelfStore {
                 snapshot.items = snapshot.items.map(resolveState(for:))
                 return snapshot
             }
+            invalidateURLCache()
             postChange(saveAfter: false)
         } catch {
             items = []
@@ -40,13 +44,28 @@ final class ShelfStore {
     }
 
     func save() {
-        do {
-            try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
-            let persistence = ShelfPersistence(activeItems: items, recentSnapshots: recentSnapshots)
-            let data = try encoder.encode(persistence)
-            try data.write(to: persistenceURL, options: .atomic)
-        } catch {
-            NSLog("DropFlow persistence error: \(error.localizedDescription)")
+        let supportURL = appSupportURL
+        let fileURL = persistenceURL
+        let persistence = ShelfPersistence(activeItems: items, recentSnapshots: recentSnapshots)
+        let encoder = self.encoder
+        saveQueue.async {
+            do {
+                try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
+                let data = try encoder.encode(persistence)
+                try data.write(to: fileURL, options: .atomic)
+            } catch {
+                NSLog("DropFlow persistence error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func scheduleSave() {
+        guard !pendingSave else { return }
+        pendingSave = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.pendingSave = false
+            self.save()
         }
     }
 
@@ -62,12 +81,14 @@ final class ShelfStore {
             }
         }
         items.append(contentsOf: newItems.map(resolveState(for:)))
+        invalidateURLCache()
         postChange()
     }
 
     func remove(_ item: ShelfItem) {
         items.removeAll { $0.id == item.id }
         selectedIDs.remove(item.id)
+        resolvedURLCache.removeValue(forKey: item.id)
         postChange()
     }
 
@@ -75,6 +96,7 @@ final class ShelfStore {
         let ids = Set(itemsToRemove.map(\.id))
         items.removeAll { ids.contains($0.id) }
         selectedIDs.subtract(ids)
+        for id in ids { resolvedURLCache.removeValue(forKey: id) }
         postChange()
     }
 
@@ -82,6 +104,7 @@ final class ShelfStore {
         captureRecentSnapshotIfNeeded()
         items = []
         selectedIDs.removeAll()
+        resolvedURLCache.removeAll()
         postChange()
     }
 
@@ -94,6 +117,7 @@ final class ShelfStore {
         reopened.lastOpenedAt = Date()
         recentSnapshots.insert(reopened, at: 0)
         trimSnapshots()
+        invalidateURLCache()
         postChange()
     }
 
@@ -103,17 +127,17 @@ final class ShelfStore {
         } else {
             selectedIDs.insert(item.id)
         }
-        postChange()
+        postChange(saveAfter: false)
     }
 
     func selectOnly(_ item: ShelfItem) {
         selectedIDs = [item.id]
-        postChange()
+        postChange(saveAfter: false)
     }
 
     func selectOnly(_ items: [ShelfItem]) {
         selectedIDs = Set(items.map(\.id))
-        postChange()
+        postChange(saveAfter: false)
     }
 
     func setDragMode(_ mode: ShelfDragMode) {
@@ -184,7 +208,14 @@ final class ShelfStore {
     }
 
     func displayGroups() -> [ShelfDisplayGroup] {
+        var groupBuckets: [UUID: [ShelfItem]] = [:]
+        for item in items {
+            guard let groupID = item.dropGroupID else { continue }
+            groupBuckets[groupID, default: []].append(item)
+        }
+
         var groups: [ShelfDisplayGroup] = []
+        groups.reserveCapacity(items.count)
         var consumedGroupIDs = Set<UUID>()
 
         for item in items {
@@ -193,8 +224,8 @@ final class ShelfStore {
                 continue
             }
             guard !consumedGroupIDs.contains(groupID) else { continue }
-            let groupedItems = items.filter { $0.dropGroupID == groupID }
-            groups.append(ShelfDisplayGroup(id: groupID, items: groupedItems))
+            let bucket = groupBuckets[groupID] ?? [item]
+            groups.append(ShelfDisplayGroup(id: groupID, items: bucket))
             consumedGroupIDs.insert(groupID)
         }
 
@@ -220,11 +251,13 @@ final class ShelfStore {
         let urls = fileItems.compactMap(resolveURL(for:)).filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !urls.isEmpty else { return }
 
-        do {
-            let zipURL = try ZipService.createZip(from: urls)
-            NSWorkspace.shared.activateFileViewerSelecting([zipURL])
-        } catch {
-            NSAlert(error: error).runModal()
+        Task { @MainActor in
+            do {
+                let zipURL = try await ZipService.createZip(from: urls)
+                NSWorkspace.shared.activateFileViewerSelecting([zipURL])
+            } catch {
+                NSAlert(error: error).runModal()
+            }
         }
     }
 
@@ -238,23 +271,36 @@ final class ShelfStore {
     }
 
     func resolveURL(for item: ShelfItem) -> URL? {
+        if let cached = resolvedURLCache[item.id] {
+            return cached
+        }
+        let resolved: URL?
         if let bookmarkData = item.bookmarkData {
             var stale = false
-            if let url = try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) {
-                return url
-            }
+            resolved = (try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)) ?? item.sourceURL
+        } else {
+            resolved = item.sourceURL
         }
-        return item.sourceURL
+        if let resolved {
+            resolvedURLCache[item.id] = resolved
+        }
+        return resolved
+    }
+
+    private func invalidateURLCache() {
+        resolvedURLCache.removeAll(keepingCapacity: true)
     }
 
     func refreshResolvedStates() {
+        invalidateURLCache()
         items = items.map(resolveState(for:))
         postChange()
     }
 
     private var appSupportURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DropFlow", isDirectory: true)
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("DropFlow", isDirectory: true)
     }
 
     private var persistenceURL: URL {
@@ -296,7 +342,7 @@ final class ShelfStore {
 
     private func postChange(saveAfter: Bool = true) {
         if saveAfter {
-            save()
+            scheduleSave()
         }
         NotificationCenter.default.post(name: .shelfStoreDidChange, object: self)
     }

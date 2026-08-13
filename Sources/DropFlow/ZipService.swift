@@ -1,27 +1,37 @@
 import Foundation
 
 enum ZipService {
-    static func createZip(from urls: [URL]) throws -> URL {
+    static func createZip(from urls: [URL]) async throws -> URL {
         let outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HHmmss"
         let outputURL = outputDirectory.appendingPathComponent("DropFlow-\(formatter.string(from: Date())).zip")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         let baseURL = commonParent(for: urls)
-        process.currentDirectoryURL = baseURL
-        process.arguments = ["-r", outputURL.path] + urls.map { relativePath(from: baseURL, to: $0) }
+        let relPaths = urls.map { relativePath(from: baseURL, to: $0) }
 
-        try process.run()
-        process.waitUntilExit()
+        return try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.currentDirectoryURL = baseURL
+            process.arguments = ["-r", outputURL.path] + relPaths
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
 
-        guard process.terminationStatus == 0 else {
-            throw CocoaError(.fileWriteUnknown)
+            process.terminationHandler = { proc in
+                if proc.terminationStatus == 0 {
+                    continuation.resume(returning: outputURL)
+                } else {
+                    continuation.resume(throwing: CocoaError(.fileWriteUnknown))
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
-
-        return outputURL
     }
 
     private static func commonParent(for urls: [URL]) -> URL {
