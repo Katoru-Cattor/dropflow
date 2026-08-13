@@ -13,7 +13,7 @@ Target stack: native Swift using AppKit/SwiftUI, SwiftPM-first because this mach
 - Activation methods:
   - Global hotkey opens the shelf near the cursor.
   - Menu bar command opens/toggles the shelf.
-  - Pointer shake activation is included in v1 and may request Accessibility permission for reliable global tracking.
+  - Pointer shake activation is included in v1. It polls the pointer position; no Accessibility permission is requested.
   - If permission is denied, hotkey and menu bar remain fully usable.
 - Recent history:
   - Keep up to 10 recent shelf snapshots locally.
@@ -34,7 +34,7 @@ Target stack: native Swift using AppKit/SwiftUI, SwiftPM-first because this mach
   - `DragDropView`/AppKit bridge for robust pasteboard reading and dragging items back out.
   - `StatusBarController` for menu bar actions.
   - `HotkeyController` for global shortcut registration.
-  - `ShakeDetector` using global mouse/drag movement monitoring, with Accessibility onboarding and fallback behavior.
+  - `ShakeDetector` polling the pointer while a drag is in flight. No event tap, so no permission onboarding.
 - Minimum data model:
   - `ShelfItem`: id, kind, displayName, source URL/bookmark or inline text/URL payload, createdAt, lastResolvedState.
   - `ShelfSnapshot`: id, title, items, createdAt, lastOpenedAt.
@@ -47,7 +47,7 @@ Target stack: native Swift using AppKit/SwiftUI, SwiftPM-first because this mach
 - Drag files, folders, URLs, text, and images into the shelf from Finder/browser/apps.
 - Drag items from the shelf back into Finder and another compatible app.
 - Verify hotkey, menu bar toggle, and shake activation.
-- Test first-run Accessibility permission flow and denied-permission fallback.
+- Test that shake activation works on a stock machine with no permissions granted.
 - Quit/reopen and confirm recent history restores up to 10 shelf snapshots.
 - Move/delete original files and confirm missing-item UI does not crash.
 - Run ZIP action on one file, multiple files, folders, and unavailable items.
@@ -57,4 +57,4 @@ Target stack: native Swift using AppKit/SwiftUI, SwiftPM-first because this mach
 - Personal MVP is the priority over public distribution polish.
 - macOS 26 is the primary target for now; broader macOS compatibility can be planned later.
 - A full Xcode install/signing flow is optional for a later packaging phase.
-- Shake activation is useful enough to justify requesting Accessibility permission.
+- Shake activation must not require Accessibility: a permission-gated tap silently never fires, so the feature looks imaginary.

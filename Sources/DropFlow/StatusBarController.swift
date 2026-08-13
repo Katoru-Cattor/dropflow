@@ -3,7 +3,6 @@ import AppKit
 struct AppActions {
     var toggleShelf: () -> Void
     var showShelf: () -> Void
-    var requestAccessibility: () -> Void
     var checkForUpdates: () -> Void
     var hotkeyStatus: () -> OSStatus
     var quit: () -> Void
@@ -139,7 +138,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func toggleShelf() { actions.toggleShelf() }
     @objc private func clearShelf() { store.clearShelf() }
     @objc private func createZip() { store.zipSelectedOrAll() }
-    @objc private func requestAccessibility() { actions.requestAccessibility() }
     @objc private func checkForUpdates() { actions.checkForUpdates() }
     @objc private func quit() { actions.quit() }
 

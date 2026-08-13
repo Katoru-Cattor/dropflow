@@ -18,10 +18,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController = StatusBarController(store: store, actions: AppActions(
             toggleShelf: { [weak shelfWindowController] in shelfWindowController?.toggleNearCursor() },
             showShelf: { [weak shelfWindowController] in shelfWindowController?.showNearCursor() },
-            requestAccessibility: { [weak self] in
-                ShakeDetector.requestAccessibilityPermission()
-                self?.shakeDetector?.start()
-            },
             checkForUpdates: { [weak self] in self?.updateController.checkForUpdates() },
             // Read lazily: the hotkey is registered below, after this controller exists.
             hotkeyStatus: { [weak self] in self?.hotkeyController?.lastRegistrationStatus ?? noErr },

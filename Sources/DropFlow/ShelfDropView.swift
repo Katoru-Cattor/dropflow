@@ -10,7 +10,11 @@ final class ShelfDropView: NSView {
     init(store: ShelfStore) {
         self.store = store
         super.init(frame: .zero)
-        registerForDraggedTypes([.fileURL, .URL, .string, .png, .tiff])
+        // Photos, Mail attachments and some browser drags offer only a file promise — no file URL,
+        // no image data. Without these types the shelf refuses the drag outright: no highlight, no
+        // drop, no explanation.
+        let promiseTypes = NSFilePromiseReceiver.readableDraggedTypes.map(NSPasteboard.PasteboardType.init(rawValue:))
+        registerForDraggedTypes([.fileURL, .URL, .string, .png, .tiff] + promiseTypes)
     }
 
     required init?(coder: NSCoder) {
@@ -37,9 +41,58 @@ final class ShelfDropView: NSView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         isDraggingInside = false
         guard !isInternalShelfDrag(sender) else { return false }
+
+        let before = store.items.count
         store.addItems(from: sender.draggingPasteboard)
+        if store.items.count > before { return true }
+        if receivePromisedFiles(from: sender.draggingPasteboard) { return true }
+        // Blank text, or a row the shelf already holds. Reporting the truth makes the drag spring
+        // back to where it came from instead of animating a success that added nothing.
+        return false
+    }
+
+    /// Materialises file promises and re-enters through the pasteboard path, so promised files get
+    /// the same bookmark, de-dupe and persistence treatment as a Finder drag.
+    private func receivePromisedFiles(from pasteboard: NSPasteboard) -> Bool {
+        let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver]
+        guard let receivers, !receivers.isEmpty else { return false }
+
+        // ponytail: promised files land in the temp directory, so a shelved Photos drag can go stale
+        // if macOS purges it. Upgrade path: write them into the store's support directory once
+        // ShelfStore exposes it.
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("DropFlow-Drops", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        } catch {
+            NSLog("DropFlow drop error: no promise destination: \(error.localizedDescription)")
+            return false
+        }
+
+        let store = self.store
+        for receiver in receivers {
+            receiver.receivePromisedFiles(atDestination: destination, options: [:], operationQueue: Self.promiseQueue) { url, error in
+                if let error {
+                    NSLog("DropFlow drop error: promised file failed: \(error.localizedDescription)")
+                    return
+                }
+                Task { @MainActor in
+                    let scratch = NSPasteboard.withUniqueName()
+                    scratch.clearContents()
+                    scratch.writeObjects([url as NSURL])
+                    store.addItems(from: scratch)
+                    scratch.releaseGlobally()
+                }
+            }
+        }
         return true
     }
+
+    /// The promise reader must not be handed the main queue.
+    private static let promiseQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "io.github.katoru-cattor.dropflow.file-promises"
+        return queue
+    }()
 
     private func isInternalShelfDrag(_ sender: NSDraggingInfo) -> Bool {
         guard let sourceView = sender.draggingSource as? NSView else { return false }

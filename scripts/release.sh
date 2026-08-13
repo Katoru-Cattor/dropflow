@@ -139,8 +139,8 @@ right-click → Open bypass no longer works on current macOS. Instead:
 
 **Updating.** Menu bar → **Check for Updates…** only tells you a release exists and opens this .dmg
 in your browser — it never installs anything. Quit the running copy, then drag the new one to
-/Applications. Ad-hoc signing also means macOS sees each build as a different app, so re-grant
-Accessibility (shake activation) and the Downloads-folder prompt (ZIP) after updating.
+/Applications. Ad-hoc signing also means macOS sees each build as a different app, so the
+Downloads-folder prompt (ZIP) reappears after updating. Shake activation needs no permission.
 
 **Upgrading from 0.1.0 or 0.2.0:** turn **Launch at Login off before** you replace the app. The
 bundle identifier changed in this release, so the old login-item registration can only be removed by

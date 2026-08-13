@@ -61,8 +61,8 @@ right-click → **Open** bypass no longer works on current macOS:
 3. Confirm with Touch ID or your password, then open DropFlow again. It launches normally from then on.
 
 Because the signature is ad-hoc, macOS treats every new build as a different app for privacy
-purposes. After replacing the app you have to re-grant Accessibility (used by shake activation),
-and the Downloads-folder prompt reappears the next time you create a ZIP.
+purposes, so the Downloads-folder prompt reappears the next time you create a ZIP. Shake activation
+needs no permission at all — it polls the pointer rather than tapping the event stream.
 
 ## Updates
 
@@ -72,8 +72,8 @@ It sends nothing else — no analytics, no accounts, no file data. If a newer re
 `.dmg` opens in your browser and you install it by hand as above. Turn the daily check off with
 **Check Automatically** in the same menu.
 
-Because each build is ad-hoc signed, macOS treats it as a different app: re-grant Accessibility
-(shake activation) and the Downloads-folder prompt (ZIP) after replacing DropFlow.
+Because each build is ad-hoc signed, macOS treats it as a different app, so the Downloads-folder
+prompt (ZIP) reappears after replacing DropFlow.
 
 If you are upgrading from 0.1.0 or 0.2.0, switch **Launch at Login** off *before* replacing the app.
 The bundle identifier changed after 0.2.0, and only the old binary can unregister its own login item —
