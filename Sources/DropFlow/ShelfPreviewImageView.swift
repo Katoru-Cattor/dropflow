@@ -4,6 +4,7 @@ import AppKit
 @MainActor
 final class ShelfPreviewImageView: NSImageView {
     private var representedItemID: UUID?
+    private var pendingRequest: QLThumbnailGenerator.Request?
 
     init(item: ShelfItem, store: ShelfStore, thumbnailSize: CGSize = CGSize(width: 52, height: 52)) {
         super.init(frame: .zero)
@@ -15,14 +16,35 @@ final class ShelfPreviewImageView: NSImageView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    isolated deinit {
+        // Rows are rebuilt on every change, so a scrolled-away or replaced tile used to leave its
+        // thumbnail job running to completion for an image nobody will ever see.
+        if let pendingRequest {
+            QLThumbnailGenerator.shared.cancel(pendingRequest)
+        }
+    }
+
     private func setup() {
         imageScaling = .scaleProportionallyUpOrDown
         wantsLayer = true
         layer?.cornerRadius = 7
         layer?.masksToBounds = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.65).cgColor
+        applyLayerColors()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    private func applyLayerColors() {
+        // Layer colours are CGColor snapshots taken once, so without this the tile keeps the palette it
+        // was built in when the system flips between light and dark.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
+            layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.65).cgColor
+        }
     }
 
     private func configure(item: ShelfItem, store: ShelfStore, thumbnailSize: CGSize) {
@@ -41,11 +63,18 @@ final class ShelfPreviewImageView: NSImageView {
             representationTypes: .all
         )
 
+        pendingRequest = request
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] thumbnail, _ in
-            guard let thumbnail else { return }
+            // The NSImage is pulled out here, before the hop. QLThumbnailRepresentation is not
+            // Sendable, so carrying it into a main-actor closure is a region-isolation error that
+            // `swiftc -typecheck` on loose files does not report but `swift build` does.
+            let image = thumbnail?.nsImage
             DispatchQueue.main.async {
                 guard self?.representedItemID == item.id else { return }
-                self?.image = thumbnail.nsImage
+                // Cleared on failure too — a finished request must not be cancelled in deinit.
+                self?.pendingRequest = nil
+                guard let image else { return }
+                self?.image = image
             }
         }
     }

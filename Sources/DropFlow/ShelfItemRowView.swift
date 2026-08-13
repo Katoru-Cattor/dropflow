@@ -1,10 +1,43 @@
 import AppKit
 
+/// The 26×24 row button, shared by both row views. `ShelfRootView` keeps its own 30×26 variant on
+/// purpose — different size, and it needs `ShelfIconButton`.
+@MainActor
+func shelfActionButton(symbol: String, accessibility: String, target: AnyObject, action: Selector) -> NSButton {
+    let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: accessibility) ?? NSImage(), target: target, action: action)
+    button.bezelStyle = .texturedRounded
+    button.isBordered = true
+    button.toolTip = accessibility
+    button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+    return button
+}
+
+/// Copying wrote to the pasteboard with no acknowledgement anywhere, so the click was indistinguishable
+/// from a dead button. Flash a checkmark and put the glyph back.
+@MainActor
+func shelfFlashCopyConfirmation(on button: NSButton?) {
+    guard let button else { return }
+    // Restore the caller's own label, not a hardcoded "Copy": the stack row's button says
+    // "Copy items", and hardcoding degraded its VoiceOver label permanently after one copy.
+    let restoredLabel = button.image?.accessibilityDescription ?? button.toolTip ?? "Copy"
+    button.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak button] in
+        MainActor.assumeIsolated {
+            button?.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: restoredLabel)
+        }
+    }
+}
+
 @MainActor
 final class ShelfItemRowView: NSView, NSDraggingSource {
     private let item: ShelfItem
     private let store: ShelfStore
     private var didStartDrag = false
+    private weak var copyButton: NSButton?
+    // Selecting on drag rebuilds this row, which removes it from the panel while the drag is still
+    // running. The session needs its source alive to report back, so the row holds itself until then.
+    private var dragSessionHold: ShelfItemRowView?
 
     init(item: ShelfItem, store: ShelfStore) {
         self.item = item
@@ -19,12 +52,15 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
 
     override var isFlipped: Bool { true }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
     private func setup() {
         wantsLayer = true
         layer?.cornerRadius = 8
-        layer?.backgroundColor = backgroundColor.cgColor
         layer?.borderWidth = store.selectedIDs.contains(item.id) ? 2 : 1
-        layer?.borderColor = borderColor.cgColor
 
         let preview = ShelfPreviewImageView(item: item, store: store)
         preview.translatesAutoresizingMaskIntoConstraints = false
@@ -33,6 +69,9 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.textColor = item.lastResolvedState == .missing ? .systemRed : .labelColor
         title.lineBreakMode = .byTruncatingMiddle
+        // Names truncate in the middle in a ~367 pt panel and the detail line only ever names the type,
+        // so the tooltip is the one place the full path is available.
+        title.toolTip = locationText()
         title.translatesAutoresizingMaskIntoConstraints = false
 
         let detail = NSTextField(labelWithString: detailText())
@@ -46,13 +85,15 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
         labels.spacing = 3
         labels.translatesAutoresizingMaskIntoConstraints = false
 
-        let revealButton = actionButton(symbol: "magnifyingglass", action: #selector(revealItem), accessibility: "Reveal in Finder")
-        let openButton = actionButton(symbol: "arrow.up.forward.app", action: #selector(openItem), accessibility: "Open")
-        let copyButton = actionButton(symbol: "doc.on.doc", action: #selector(copyItem), accessibility: "Copy")
-        let removeButton = actionButton(symbol: "minus.circle", action: #selector(removeItem), accessibility: "Remove")
+        let revealButton = shelfActionButton(symbol: "magnifyingglass", accessibility: "Reveal in Finder", target: self, action: #selector(revealItem))
+        let openButton = shelfActionButton(symbol: "arrow.up.forward.app", accessibility: "Open", target: self, action: #selector(openItem))
+        let copyButton = shelfActionButton(symbol: "doc.on.doc", accessibility: "Copy", target: self, action: #selector(copyItem))
+        let removeButton = shelfActionButton(symbol: "minus.circle", accessibility: "Remove", target: self, action: #selector(removeItem))
 
-        revealButton.isEnabled = item.isFileBacked && item.lastResolvedState == .resolved
-        openButton.isEnabled = item.lastResolvedState != .missing
+        revealButton.isEnabled = canReveal
+        openButton.isEnabled = canOpen
+        copyButton.isEnabled = canCopy
+        self.copyButton = copyButton
 
         let buttons = NSStackView(views: [revealButton, openButton, copyButton, removeButton])
         buttons.orientation = .horizontal
@@ -76,6 +117,17 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             buttons.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
+
+        applyLayerColors()
+    }
+
+    private func applyLayerColors() {
+        // Layer colours are CGColor snapshots taken once, so without this the row keeps the palette it
+        // was built in when the system flips between light and dark.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = backgroundColor.cgColor
+            layer?.borderColor = borderColor.cgColor
+        }
     }
 
     private var backgroundColor: NSColor {
@@ -93,6 +145,20 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
             return .systemRed.withAlphaComponent(0.7)
         }
         return .separatorColor
+    }
+
+    private var canReveal: Bool {
+        item.isFileBacked && item.lastResolvedState == .resolved
+    }
+
+    private var canOpen: Bool {
+        item.lastResolvedState != .missing
+    }
+
+    /// Mirrors what `copyValue(for:)` can actually put on the pasteboard, so the button is never live
+    /// for an item that would copy nothing and flash a checkmark anyway.
+    private var canCopy: Bool {
+        store.resolveURL(for: item) != nil || item.inlineText != nil
     }
 
     private func detailText() -> String {
@@ -115,20 +181,45 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
         return item.kind.label
     }
 
-    private func actionButton(symbol: String, action: Selector, accessibility: String) -> NSButton {
-        let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: accessibility) ?? NSImage(), target: self, action: action)
-        button.bezelStyle = .texturedRounded
-        button.isBordered = true
-        button.toolTip = accessibility
-        button.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
-        return button
+    private func locationText() -> String {
+        if let url = store.resolveURL(for: item) {
+            return url.isFileURL ? url.path : url.absoluteString
+        }
+        return item.inlineText ?? item.displayName
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        // Without this, right-clicking a row did nothing at all, which reads as a broken row. It
+        // deliberately leaves the selection alone: the menu acts on its own row, and selecting would
+        // rebuild — and remove — the very view the menu is attached to.
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let entries: [(String, Selector, Bool)] = [
+            ("Reveal in Finder", #selector(revealItem), canReveal),
+            ("Open", #selector(openItem), canOpen),
+            ("Copy", #selector(copyItem), canCopy)
+        ]
+        for (title, action, enabled) in entries {
+            let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            menuItem.target = self
+            menuItem.isEnabled = enabled
+            menu.addItem(menuItem)
+        }
+        menu.addItem(.separator())
+        let remove = NSMenuItem(title: "Remove", action: #selector(removeItem), keyEquivalent: "")
+        remove.target = self
+        menu.addItem(remove)
+        return menu
     }
 
     @objc private func revealItem() { store.reveal(item) }
     @objc private func openItem() { store.open(item) }
-    @objc private func copyItem() { store.copyValue(for: item) }
     @objc private func removeItem() { store.remove(item) }
+
+    @objc private func copyItem() {
+        store.copyValue(for: item)
+        shelfFlashCopyConfirmation(on: copyButton)
+    }
 
     override func mouseDown(with event: NSEvent) {
         didStartDrag = false
@@ -147,33 +238,57 @@ final class ShelfItemRowView: NSView, NSDraggingSource {
         guard !didStartDrag, item.lastResolvedState != .missing else { return }
         didStartDrag = true
 
+        // Dragging an unselected row used to leave the previous rows highlighted while a different
+        // icon flew, so the highlight and the payload disagreed on screen.
+        if !store.selectedIDs.contains(item.id) {
+            store.selectOnly(item)
+        }
+
         let dragItems = store.itemsForDrag(startingWith: item)
         let draggingItems = dragItems.compactMap(makeDraggingItem(for:))
         guard !draggingItems.isEmpty else { return }
 
+        dragSessionHold = self
         beginDraggingSession(with: draggingItems, event: event, source: self)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .outsideApplication ? [.copy, .move] : .copy
+        // .copy in both contexts. The payload is a file-url to the user's own file — the shelf stores
+        // references, not copies — so advertising .move lets Finder relocate the original out of
+        // ~/Downloads. Not gated on a modifier: in Finder, Command forces move and Option forces copy,
+        // so a Command gate would match nothing.
+        .copy
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        dragSessionHold = nil
     }
 
     private func makeDraggingItem(for item: ShelfItem) -> NSDraggingItem? {
         let writer: NSPasteboardWriting
-        let image: NSImage
-
         if let url = store.resolveURL(for: item) {
-            writer = url as NSURL
-            image = ShelfPreviewImageView.fallbackImage(for: item, store: store)
+            if url.isFileURL {
+                writer = url as NSURL
+            } else {
+                // A web URL written as NSURL advertises only public.url, so plain-text drop targets
+                // saw nothing — and copyValue already writes .string, so drag and copy disagreed
+                // about the same item.
+                let pasteboardItem = NSPasteboardItem()
+                pasteboardItem.setString(url.absoluteString, forType: .URL)
+                pasteboardItem.setString(url.absoluteString, forType: .string)
+                writer = pasteboardItem
+            }
         } else if let text = item.inlineText {
             writer = text as NSString
-            image = ShelfPreviewImageView.fallbackImage(for: item, store: store)
         } else {
             return nil
         }
 
         let draggingItem = NSDraggingItem(pasteboardWriter: writer)
-        draggingItem.setDraggingFrame(draggingFrame(for: item), contents: image)
+        draggingItem.setDraggingFrame(
+            draggingFrame(for: item),
+            contents: ShelfPreviewImageView.fallbackImage(for: item, store: store)
+        )
         return draggingItem
     }
 

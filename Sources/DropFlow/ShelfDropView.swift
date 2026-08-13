@@ -72,6 +72,10 @@ final class ShelfDropView: NSView {
         for receiver in receivers {
             receiver.receivePromisedFiles(atDestination: destination, options: [:], operationQueue: Self.promiseQueue) { url, error in
                 if let error {
+                    // ponytail: Console only. performDragOperation already returned true — springing
+                    // the drag back mid-async is worse — so a failed Photos export animates an
+                    // accepted drop onto an unchanged shelf. Upgrade: give ShelfStore an error
+                    // channel the panel can surface, and report it here.
                     NSLog("DropFlow drop error: promised file failed: \(error.localizedDescription)")
                     return
                 }

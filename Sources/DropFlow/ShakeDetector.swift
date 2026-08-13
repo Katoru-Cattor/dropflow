@@ -20,12 +20,6 @@ final class ShakeDetector {
         pollTimer?.invalidate()
     }
 
-    /// Whether the pointer poll is actually live, so the status menu can never claim shake
-    /// activation is armed while nothing is watching the pointer.
-    var isWatching: Bool {
-        pollTimer?.isValid == true
-    }
-
     func start() {
         stop()
         // Pointer polling only, deliberately. The CGEvent tap this replaced needed

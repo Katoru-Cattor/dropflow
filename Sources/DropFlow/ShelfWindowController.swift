@@ -53,6 +53,12 @@ final class ShelfWindowController: NSWindowController {
         resizeForCurrentMode(animated: false)
         positionNearCursor(window)
         window.orderFrontRegardless()
+        // makeKey as well as makeFirstResponder. Ordering a panel front does not make it key, so
+        // Escape/Delete/Cmd-A went to whatever app was frontmost — pressing Escape to dismiss the
+        // shelf cancelled something in Safari while the shelf stayed open. This is safe precisely
+        // because the panel is .nonactivatingPanel: it takes key status for keystrokes without
+        // activating DropFlow, so the document the user was typing in keeps its insertion point.
+        window.makeKey()
         // Borderless non-activating panels start with no first responder, so key events never reach
         // the content view's keyDown.
         window.makeFirstResponder(window.contentView)

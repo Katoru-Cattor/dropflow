@@ -29,12 +29,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeyController?.start()
 
-        shakeDetector = ShakeDetector {
-            shelfWindowController.showNearCursor()
+        shakeDetector = ShakeDetector { [weak shelfWindowController] in
+            // Shake must only ever summon a hidden shelf, never re-position a visible one. The
+            // detector's drag gate cannot tell our own beginDraggingSession from a Finder drag, so
+            // shaking while dragging items OUT of the shelf would teleport the panel under the
+            // pointer — and the drop then lands back on the shelf and is rejected as internal.
+            guard shelfWindowController?.window?.isVisible != true else { return }
+            shelfWindowController?.showNearCursor()
         }
         shakeDetector?.start()
 
-        shelfWindowController.showNearCursor()
+        // Show the shelf on first launch only. This is an LSUIElement app, so with nothing shown a
+        // new user sees no evidence it installed; but it also offers Launch at Login, and every
+        // later launch is a login — a .floating, canJoinAllSpaces panel that never resigns key
+        // must not land on top of whatever the user is doing at boot.
+        if !UserDefaults.standard.bool(forKey: "HasLaunchedBefore") {
+            UserDefaults.standard.set(true, forKey: "HasLaunchedBefore")
+            shelfWindowController.showNearCursor()
+        }
         updateController.checkInBackgroundIfDue()
     }
 
