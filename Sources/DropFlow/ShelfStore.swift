@@ -1,5 +1,4 @@
 import AppKit
-import UniformTypeIdentifiers
 
 extension Notification.Name {
     static let shelfStoreDidChange = Notification.Name("DropFlowShelfStoreDidChange")
@@ -12,6 +11,8 @@ final class ShelfStore {
     private(set) var selectedIDs: Set<UUID> = []
     private(set) var dragMode: ShelfDragMode = .simplify
 
+    private static let dragModeDefaultsKey = "ShelfDragMode"
+
     private let maxSnapshots = 10
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -23,6 +24,7 @@ final class ShelfStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
+        dragMode = ShelfDragMode(rawValue: UserDefaults.standard.string(forKey: Self.dragModeDefaultsKey) ?? "") ?? .simplify
     }
 
     func load() {
@@ -30,16 +32,45 @@ final class ShelfStore {
             let data = try Data(contentsOf: persistenceURL)
             let persisted = try decoder.decode(ShelfPersistence.self, from: data)
             items = persisted.activeItems.map(resolveState(for:))
-            recentSnapshots = persisted.recentSnapshots.map { snapshot in
-                var snapshot = snapshot
-                snapshot.items = snapshot.items.map(resolveState(for:))
-                return snapshot
-            }
+            // Snapshot items are deliberately NOT resolved here: this runs as the first statement of
+            // applicationDidFinishLaunching, before anything is on screen, and resolving up to 10
+            // snapshots' bookmarks blocks the main thread. Nothing needs it — the menu reads only
+            // .title/.id and restore(snapshot:) resolves then.
+            recentSnapshots = persisted.recentSnapshots
             invalidateURLCache()
+            sweepOrphanedImages()
             postChange(saveAfter: false)
         } catch {
+            // A load failure must never reach the point where the next save overwrites the file: this
+            // is the only copy of the shelf plus all 10 snapshots. Move it aside instead, so a schema
+            // change in a shipped update is recoverable from disk rather than silently fatal. Note
+            // there is no postChange() here — nothing schedules a save from this path.
+            let missing = (error as? CocoaError)?.code == .fileReadNoSuchFile
+                || !FileManager.default.fileExists(atPath: persistenceURL.path)
+            if !missing {
+                let aside = persistenceURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
+                NSLog("DropFlow could not read shelf.json (\(error)); preserving it at \(aside.lastPathComponent)")
+                try? FileManager.default.moveItem(at: persistenceURL, to: aside)
+            }
             items = []
             recentSnapshots = []
+        }
+    }
+
+    /// Nothing else in the app ever deletes from Images/, so every pasted screenshot stays forever.
+    /// Safe only after a successful load: on a failed load `items` is empty and this would delete every
+    /// image the user still has. Backing files are intentionally not deleted by remove()/clearShelf() —
+    /// those items live on in recentSnapshots and Restore has to keep working.
+    private func sweepOrphanedImages() {
+        // ponytail: `live` is a launch-time snapshot, so a drop landing mid-sweep could lose its image.
+        // The window is the few milliseconds before any UI exists. Upgrade: skip files newer than launch.
+        let live = Set((items + recentSnapshots.flatMap(\.items)).compactMap(\.sourceURL).map(\.lastPathComponent))
+        let directory = imageDirectoryURL
+        saveQueue.async {
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for file in files where !live.contains(file.lastPathComponent) {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
     }
 
@@ -80,6 +111,11 @@ final class ShelfStore {
     func addItems(from pasteboard: NSPasteboard) {
         var newItems = PasteboardReader.readItems(from: pasteboard, imageDirectory: imageDirectoryURL)
         guard !newItems.isEmpty else { return }
+        // PasteboardReader de-dupes only within one drop, so dropping the same file again tomorrow
+        // added a second identical row. Same key it uses.
+        let existingKeys = Set(items.map(dedupeKey(for:)))
+        newItems = newItems.filter { !existingKeys.contains(dedupeKey(for: $0)) }
+        guard !newItems.isEmpty else { return }
         if newItems.count > 1 {
             let groupID = UUID()
             newItems = newItems.map { item in
@@ -91,6 +127,10 @@ final class ShelfStore {
         items.append(contentsOf: newItems.map(resolveState(for:)))
         invalidateURLCache()
         postChange()
+    }
+
+    private func dedupeKey(for item: ShelfItem) -> String {
+        item.sourceURLString ?? item.inlineText ?? item.id.uuidString
     }
 
     func remove(_ item: ShelfItem) {
@@ -151,6 +191,9 @@ final class ShelfStore {
     func setDragMode(_ mode: ShelfDragMode) {
         guard dragMode != mode else { return }
         dragMode = mode
+        // Kept out of shelf.json on purpose: a new non-optional field in ShelfPersistence would make
+        // synthesized Codable throw keyNotFound on every existing user's file (defaults are ignored).
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.dragModeDefaultsKey)
         postChange(saveAfter: false)
     }
 
@@ -178,41 +221,72 @@ final class ShelfStore {
     }
 
     func copyValue(for item: ShelfItem) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-
+        var fileURL: URL?
+        var text: String?
         if let url = resolveURL(for: item) {
             if item.isFileBacked {
-                pasteboard.writeObjects([url as NSURL])
+                fileURL = url
             } else {
-                pasteboard.setString(url.absoluteString, forType: .string)
+                text = url.absoluteString
             }
-            return
+        } else {
+            text = item.inlineText
         }
 
-        if let text = item.inlineText {
+        // Compute the payload first, clear last: clearing up front wiped whatever the user had copied
+        // before whenever the item resolved to nothing, and then wrote nothing in its place.
+        guard fileURL != nil || text != nil else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if let fileURL {
+            pasteboard.writeObjects([fileURL as NSURL])
+        }
+        if let text {
             pasteboard.setString(text, forType: .string)
         }
     }
 
     func copyValues(for itemsToCopy: [ShelfItem]) {
+        var fileURLs: [NSURL] = []
+        var texts: [String] = []
+        for item in itemsToCopy {
+            if let url = resolveURL(for: item) {
+                if url.isFileURL {
+                    fileURLs.append(url as NSURL)
+                } else {
+                    texts.append(url.absoluteString)
+                }
+            } else if let text = item.inlineText {
+                texts.append(text)
+            }
+        }
+
+        // A mixed selection used to collapse to one representation, so pasting into Finder lost the files
+        // or pasting into an editor lost the text. Write both flavours onto the one pasteboard; setString
+        // after writeObjects replaces the string flavour NSURL declares, which is what we want here.
+        guard !fileURLs.isEmpty || !texts.isEmpty else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-
-        let urls = itemsToCopy.compactMap(resolveURL(for:))
-        let fileURLs = urls.filter(\.isFileURL)
-        if fileURLs.count == itemsToCopy.count {
-            pasteboard.writeObjects(fileURLs.map { $0 as NSURL })
-            return
+        if !fileURLs.isEmpty {
+            pasteboard.writeObjects(fileURLs)
         }
-
-        let values = itemsToCopy.compactMap { item -> String? in
-            if let url = resolveURL(for: item) {
-                return item.isFileBacked ? url.path : url.absoluteString
-            }
-            return item.inlineText
+        if !texts.isEmpty {
+            pasteboard.setString(texts.joined(separator: "\n"), forType: .string)
         }
-        pasteboard.setString(values.joined(separator: "\n"), forType: .string)
+    }
+
+    /// Breaks a multi-file drop back into ordinary rows: `displayGroups()` then emits them individually and
+    /// every existing per-item behaviour applies unchanged.
+    func ungroup(_ group: ShelfDisplayGroup) {
+        let ids = Set(group.items.map(\.id))
+        guard items.contains(where: { ids.contains($0.id) && $0.dropGroupID != nil }) else { return }
+        items = items.map { item in
+            guard ids.contains(item.id) else { return item }
+            var item = item
+            item.dropGroupID = nil
+            return item
+        }
+        postChange()
     }
 
     func displayGroups() -> [ShelfDisplayGroup] {
@@ -280,12 +354,17 @@ final class ShelfStore {
 
     func resolveURL(for item: ShelfItem) -> URL? {
         if let cached = resolvedURLCache[item.id] {
-            return cached
+            // The memo lives for the whole process, so a file moved or deleted after it was cached kept
+            // resolving to a path that no longer exists. Re-resolve from the bookmark in that case.
+            if !cached.isFileURL || FileManager.default.fileExists(atPath: cached.path) {
+                return cached
+            }
+            resolvedURLCache.removeValue(forKey: item.id)
         }
         let resolved: URL?
         if let bookmarkData = item.bookmarkData {
             var stale = false
-            resolved = (try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)) ?? item.sourceURL
+            resolved = resolveBookmark(bookmarkData, stale: &stale) ?? item.sourceURL
         } else {
             resolved = item.sourceURL
         }
@@ -295,14 +374,40 @@ final class ShelfStore {
         return resolved
     }
 
+    private func resolveBookmark(_ data: Data, stale: inout Bool) -> URL? {
+        // .withoutMounting: with an empty option set macOS tries to remount an unplugged volume rather
+        // than failing fast, which turns a cold launch into a multi-second freeze.
+        try? URL(resolvingBookmarkData: data, options: [.withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+
     private func invalidateURLCache() {
         resolvedURLCache.removeAll(keepingCapacity: true)
     }
 
     func refreshResolvedStates() {
         invalidateURLCache()
-        items = items.map(resolveState(for:))
+        items = items.map { resolveState(for: followMovedFile($0)) }
         postChange()
+    }
+
+    /// A stale bookmark still resolves — to the file's new location — so copy that location back onto the
+    /// item. Without this the persisted path and name never follow a file the user moved and the row keeps
+    /// showing the old name. Deliberately not done inside `resolveURL`: that runs during
+    /// `items = persisted.activeItems.map(...)` in `load()`, where a write to `items` would be discarded
+    /// by the assignment that follows.
+    private func followMovedFile(_ item: ShelfItem) -> ShelfItem {
+        guard let bookmarkData = item.bookmarkData else { return item }
+        var stale = false
+        guard let url = resolveBookmark(bookmarkData, stale: &stale), stale else { return item }
+        var item = item
+        item.sourceURLString = url.absoluteString
+        if let name = try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName, !name.isEmpty {
+            item.displayName = name
+        }
+        if let refreshed = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            item.bookmarkData = refreshed
+        }
+        return item
     }
 
     private var appSupportURL: URL {

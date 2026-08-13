@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.shakeDetector?.start()
             },
             checkForUpdates: { [weak self] in self?.updateController.checkForUpdates() },
+            // Read lazily: the hotkey is registered below, after this controller exists.
+            hotkeyStatus: { [weak self] in self?.hotkeyController?.lastRegistrationStatus ?? noErr },
             quit: { NSApp.terminate(nil) }
         ))
 

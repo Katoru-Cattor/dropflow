@@ -5,6 +5,7 @@ struct AppActions {
     var showShelf: () -> Void
     var requestAccessibility: () -> Void
     var checkForUpdates: () -> Void
+    var hotkeyStatus: () -> OSStatus
     var quit: () -> Void
 }
 
@@ -13,7 +14,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let store: ShelfStore
     private let actions: AppActions
     private let statusItem: NSStatusItem
-    private var menuNeedsRebuild = true
 
     init(store: ShelfStore, actions: AppActions) {
         self.store = store
@@ -24,35 +24,73 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         statusItem.button?.title = ""
         statusItem.button?.image = Self.makeMenuBarIcon()
         statusItem.button?.imagePosition = .imageOnly
-        statusItem.button?.toolTip = "DropFlow"
+        statusItem.button?.toolTip = "DropFlow — click for the shelf, right-click for the menu"
 
-        let placeholder = NSMenu()
-        placeholder.delegate = self
-        statusItem.menu = placeholder
-
-        NotificationCenter.default.addObserver(self, selector: #selector(storeDidChange), name: .shelfStoreDidChange, object: store)
+        // No `statusItem.menu` here: while a menu is assigned AppKit opens it on click and never sends
+        // the button's action, so a plain left click could not show the shelf. The menu is attached for
+        // the duration of a right-click only (see statusItemClicked).
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusItemClicked)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
+    // MARK: - Click handling
 
-    @objc private func storeDidChange() {
-        menuNeedsRebuild = true
-    }
-
-    func menuWillOpen(_ menu: NSMenu) {
-        if menuNeedsRebuild {
-            rebuildMenu()
-            menuNeedsRebuild = false
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let wantsMenu = event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true
+        guard wantsMenu else {
+            actions.toggleShelf()
+            return
         }
-    }
 
-    private func rebuildMenu() {
         let menu = NSMenu()
         menu.delegate = self
+        // Populate BEFORE assigning. AppKit renders the item list the menu object holds at the moment it
+        // starts displaying, so anything added later shows up one open late — that is what made the first
+        // click after launch produce an empty menu.
+        populate(menu)
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)  // blocks until menu tracking ends
+        statusItem.menu = nil                 // restore left-click → shelf
+    }
+
+    /// Second belt: `populate` is idempotent, so re-running it here costs nothing and keeps the contents
+    /// honest if AppKit ever re-opens a menu object we already built.
+    func menuWillOpen(_ menu: NSMenu) {
+        populate(menu)
+    }
+
+    // MARK: - Menu
+
+    private func populate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        // Auto-enabling re-enables any item whose target responds to its action when AppKit calls
+        // update(), which silently undid the Clear Shelf / Create ZIP disabling below.
+        menu.autoenablesItems = false
+
         menu.addItem(withTitle: "Show Shelf", action: #selector(showShelf), keyEquivalent: "")
-        menu.addItem(withTitle: "Toggle Shelf", action: #selector(toggleShelf), keyEquivalent: "")
+        let toggleItem = menu.addItem(withTitle: "Toggle Shelf", action: #selector(toggleShelf), keyEquivalent: "")
+
+        // Display only — a status-menu key equivalent is live just while the menu tracks, so it cannot
+        // double-fire with the global registration. Shown only when the user has not overridden the
+        // binding, so the menu never advertises a shortcut that is not the real one.
+        // ponytail: the default binding is now declared here and in HotkeyController; the upgrade path is
+        // one shared constant both read.
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "HotkeyKeyCode") == nil, defaults.object(forKey: "HotkeyModifiers") == nil {
+            toggleItem.keyEquivalent = " "
+            toggleItem.keyEquivalentModifierMask = [.command, .shift]
+        }
+
+        let hotkeyStatus = actions.hotkeyStatus()
+        if hotkeyStatus != noErr {
+            // Without this the app just looks broken: the shortcut does nothing and nothing says why.
+            let warning = menu.addItem(withTitle: "Global Shortcut Unavailable — Use This Menu", action: nil, keyEquivalent: "")
+            warning.isEnabled = false
+            warning.toolTip = "Registering the global hotkey failed with error \(hotkeyStatus). Another app may own it."
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let clearItem = menu.addItem(withTitle: "Clear Shelf", action: #selector(clearShelf), keyEquivalent: "")
@@ -79,9 +117,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(recentItem)
 
         menu.addItem(NSMenuItem.separator())
-        let accessibilityItem = menu.addItem(withTitle: "Shake Activation Enabled", action: nil, keyEquivalent: "")
-        accessibilityItem.isEnabled = false
-
         let launchItem = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchItem.state = LaunchAtLoginController.isEnabled ? .on : .off
 
@@ -89,6 +124,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let versionItem = menu.addItem(withTitle: "DropFlow \(UpdateController.currentVersion)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        let autoCheckItem = menu.addItem(withTitle: "Check Automatically", action: #selector(toggleAutoCheck), keyEquivalent: "")
+        autoCheckItem.state = UpdateController.isAutoCheckEnabled ? .on : .off
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Quit DropFlow", action: #selector(quit), keyEquivalent: "q")
@@ -96,7 +133,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         for item in menu.items where item.target == nil {
             item.target = self
         }
-        statusItem.menu = menu
     }
 
     @objc private func showShelf() { actions.showShelf() }
@@ -107,9 +143,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func checkForUpdates() { actions.checkForUpdates() }
     @objc private func quit() { actions.quit() }
 
+    @objc private func toggleAutoCheck() {
+        UpdateController.isAutoCheckEnabled.toggle()
+    }
+
     @objc private func toggleLaunchAtLogin() {
         LaunchAtLoginController.toggle()
-        menuNeedsRebuild = true
     }
 
     @objc private func openRecent(_ sender: NSMenuItem) {

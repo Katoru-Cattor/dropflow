@@ -1,6 +1,6 @@
 import Foundation
 
-enum ShelfItemKind: String, Codable, CaseIterable {
+enum ShelfItemKind: String, Codable {
     case file
     case folder
     case url

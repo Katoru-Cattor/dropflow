@@ -22,12 +22,13 @@ final class ShelfWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.hidesOnDeactivate = false
-        window.isMovableByWindowBackground = true
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        // The panel is deliberately NOT draggable by its background: a layer-backed view overriding mouseDown and any
+        // NSTextField(labelWithString:) both report mouseDownCanMoveWindow == true, so the rows and
+        // their titles became window-drag handles and stole the file drag. The panel repositions
+        // itself on every show anyway, so background dragging bought nothing.
         window.contentView = ShelfRootView(store: store)
         super.init(window: window)
-        // Deliberately NOT wiring willHide to clearShelf. Hiding the panel — via Cmd-Opt-Space, the
+        // Deliberately NOT clearing the shelf when the panel hides. Hiding it — via Cmd-Shift-Space, the
         // header's "Hide Shelf" button, or the menu's Toggle Shelf — used to destroy the shelf,
         // which is not what any of those three labels promise. Clearing now happens only from the
         // trash button and the Clear Shelf menu item.
@@ -44,15 +45,28 @@ final class ShelfWindowController: NSWindowController {
     }
 
     func showNearCursor() {
+        // Items can be moved or deleted while the shelf is hidden, so re-resolve before showing.
+        // ponytail: synchronous fileExists per item on the main thread; fine at shelf sizes (≤ dozens),
+        // move to a background pass with a main-thread apply if it ever gets slow.
+        store.refreshResolvedStates()
         guard let window else { return }
         resizeForCurrentMode(animated: false)
         positionNearCursor(window)
         window.orderFrontRegardless()
+        // Borderless non-activating panels start with no first responder, so key events never reach
+        // the content view's keyDown.
+        window.makeFirstResponder(window.contentView)
     }
 
     func toggleNearCursor() {
         guard let window else { return }
         if window.isVisible {
+            // Only the hide branch is guarded. While a mouse button is down the user is carrying files
+            // toward the shelf, and taking the drop target away mid-drag is never what they meant.
+            // Showing it mid-drag IS wanted — that is what shake activation is for — and gating the
+            // whole function also risked a dead left-click on the menu bar icon, since the button's
+            // action can dispatch while the OS still reports the button pressed.
+            guard (NSEvent.pressedMouseButtons & 1) == 0 else { return }
             window.orderOut(nil)
         } else {
             showNearCursor()
@@ -66,29 +80,41 @@ final class ShelfWindowController: NSWindowController {
     private func resizeForCurrentMode(animated: Bool) {
         guard let window else { return }
 
-        let targetContentSize: NSSize
+        // Height only. The panel's real width is layout-determined (measured 367 pt in every mode),
+        // so the old width targets of 332/360 never matched and the early-out never fired: every
+        // store change ran an animated resize that changed nothing, and forcing the width back to
+        // 332 blocked ~73 ms before layout pushed it to 367 again.
+        let targetContentHeight: CGFloat
         if store.items.isEmpty {
-            targetContentSize = NSSize(width: 332, height: 200)
+            targetContentHeight = 200
         } else if store.dragMode == .simplify {
             let rows = max(1, Int(ceil(Double(min(store.items.count, 12)) / 4.0)))
             let contentHeight = 76 + CGFloat(rows) * 58 + CGFloat(max(rows - 1, 0)) * 10 + 34
-            targetContentSize = NSSize(width: 332, height: min(max(contentHeight, 188), 330))
+            targetContentHeight = min(max(contentHeight, 188), 330)
         } else {
             let rows = max(1, min(store.items.count, 8))
-            let contentHeight = 76 + CGFloat(rows) * 64 + CGFloat(max(rows - 1, 0)) * 8 + 24
-            targetContentSize = NSSize(width: 360, height: min(max(contentHeight, 200), 440))
+            // 74 must match the row's minimum height in ShelfRootView; 64 clipped the last row by
+            // 10 pt per row.
+            let contentHeight = 76 + CGFloat(rows) * 74 + CGFloat(max(rows - 1, 0)) * 8 + 24
+            targetContentHeight = min(max(contentHeight, 200), 440)
         }
 
-        let currentContentSize = window.contentView?.bounds.size ?? .zero
-        guard abs(currentContentSize.width - targetContentSize.width) > 0.5 || abs(currentContentSize.height - targetContentSize.height) > 0.5 else {
-            return
-        }
+        let currentContentHeight = window.contentView?.bounds.height ?? 0
+        guard abs(currentContentHeight - targetContentHeight) > 0.5 else { return }
 
-        let targetFrameSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: targetContentSize)).size
+        let targetContentRect = NSRect(x: 0, y: 0, width: window.frame.width, height: targetContentHeight)
+        let targetFrameSize = window.frameRect(forContentRect: targetContentRect).size
         var frame = window.frame
         frame.origin.y += frame.height - targetFrameSize.height
         frame.size = targetFrameSize
-        window.setFrame(frame, display: true, animate: animated && window.isVisible)
+        // Growing the panel keeps its top edge fixed, so a shelf summoned near the bottom of the
+        // screen would walk its rows off-screen — and the background drag that used to rescue it
+        // is gone. Same 12 pt inset as positionNearCursor.
+        if let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame, frame.minY < visibleFrame.minY + 12 {
+            frame.origin.y = min(visibleFrame.minY + 12, visibleFrame.maxY - frame.height - 12)
+        }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        window.setFrame(frame, display: true, animate: animated && window.isVisible && !reduceMotion)
     }
 
     private func positionNearCursor(_ window: NSWindow) {
@@ -113,8 +139,6 @@ final class ShelfWindowController: NSWindowController {
 }
 
 private final class ShelfPanel: NSPanel {
-    var willHide: (() -> Void)?
-
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
@@ -123,12 +147,5 @@ private final class ShelfPanel: NSPanel {
             makeKey()
         }
         super.sendEvent(event)
-    }
-
-    override func orderOut(_ sender: Any?) {
-        if isVisible {
-            willHide?()
-        }
-        super.orderOut(sender)
     }
 }

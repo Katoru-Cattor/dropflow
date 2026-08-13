@@ -40,6 +40,7 @@ Target stack: native Swift using AppKit/SwiftUI, SwiftPM-first because this mach
   - `ShelfSnapshot`: id, title, items, createdAt, lastOpenedAt.
   - `ShelfAction`: reveal, open, copyPath, remove, clear, zip.
 - Keep all data local. No cloud upload, accounts, analytics, licensing, App Store purchase logic, Shortcuts, watched folders, or custom action scripting in v1.
+  - Amended after v1: the only outbound request is the update check, which reads the public release list from `api.github.com` at launch, at most once a day, and sends no data about the user or their files. It notifies only — the `.dmg` opens in the browser and is installed by hand.
 - Use original branding/name. Do not use Dropover name, UI assets, icons, text, screenshots, or proprietary behavior beyond general public workflow concepts.
 
 ## Test Plan
