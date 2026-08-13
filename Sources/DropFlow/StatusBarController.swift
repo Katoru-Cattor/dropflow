@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 
 struct AppActions {
     var toggleShelf: () -> Void

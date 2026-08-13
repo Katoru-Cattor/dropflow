@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 @preconcurrency import QuickLookThumbnailing
 
 @MainActor

@@ -1,6 +1,6 @@
 import Foundation
 
-enum ShelfItemKind: String, Codable {
+public enum ShelfItemKind: String, Codable, Sendable {
     case file
     case folder
     case url
@@ -8,7 +8,7 @@ enum ShelfItemKind: String, Codable {
     case image
     case unknown
 
-    var label: String {
+    public var label: String {
         switch self {
         case .file: "File"
         case .folder: "Folder"
@@ -20,17 +20,17 @@ enum ShelfItemKind: String, Codable {
     }
 }
 
-enum ShelfResolvedState: String, Codable {
+public enum ShelfResolvedState: String, Codable, Sendable {
     case resolved
     case missing
     case inline
 }
 
-enum ShelfDragMode: String {
+public enum ShelfDragMode: String, Sendable {
     case simplify
     case advance
 
-    var label: String {
+    public var label: String {
         switch self {
         case .simplify: "Simplify"
         case .advance: "Advance"
@@ -38,18 +38,18 @@ enum ShelfDragMode: String {
     }
 }
 
-struct ShelfItem: Codable, Identifiable, Equatable {
-    var id: UUID
-    var kind: ShelfItemKind
-    var displayName: String
-    var sourceURLString: String?
-    var bookmarkData: Data?
-    var inlineText: String?
-    var dropGroupID: UUID?
-    var createdAt: Date
-    var lastResolvedState: ShelfResolvedState
+public struct ShelfItem: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var kind: ShelfItemKind
+    public var displayName: String
+    public var sourceURLString: String?
+    public var bookmarkData: Data?
+    public var inlineText: String?
+    public var dropGroupID: UUID?
+    public var createdAt: Date
+    public var lastResolvedState: ShelfResolvedState
 
-    init(
+    public init(
         id: UUID = UUID(),
         kind: ShelfItemKind,
         displayName: String,
@@ -71,11 +71,11 @@ struct ShelfItem: Codable, Identifiable, Equatable {
         self.lastResolvedState = lastResolvedState
     }
 
-    var sourceURL: URL? {
+    public var sourceURL: URL? {
         sourceURLString.flatMap(URL.init(string:))
     }
 
-    var isFileBacked: Bool {
+    public var isFileBacked: Bool {
         switch kind {
         case .file, .folder, .image:
             return sourceURL?.isFileURL == true
@@ -85,14 +85,14 @@ struct ShelfItem: Codable, Identifiable, Equatable {
     }
 }
 
-struct ShelfSnapshot: Codable, Identifiable {
-    var id: UUID
-    var title: String
-    var items: [ShelfItem]
-    var createdAt: Date
-    var lastOpenedAt: Date
+public struct ShelfSnapshot: Codable, Identifiable, Sendable {
+    public var id: UUID
+    public var title: String
+    public var items: [ShelfItem]
+    public var createdAt: Date
+    public var lastOpenedAt: Date
 
-    init(id: UUID = UUID(), title: String, items: [ShelfItem], createdAt: Date = Date(), lastOpenedAt: Date = Date()) {
+    public init(id: UUID = UUID(), title: String, items: [ShelfItem], createdAt: Date = Date(), lastOpenedAt: Date = Date()) {
         self.id = id
         self.title = title
         self.items = items
@@ -101,16 +101,16 @@ struct ShelfSnapshot: Codable, Identifiable {
     }
 }
 
-struct ShelfPersistence: Codable {
-    var activeItems: [ShelfItem]
-    var recentSnapshots: [ShelfSnapshot]
+public struct ShelfPersistence: Codable, Sendable {
+    public var activeItems: [ShelfItem]
+    public var recentSnapshots: [ShelfSnapshot]
 }
 
-struct ShelfDisplayGroup: Identifiable {
-    var id: UUID
-    var items: [ShelfItem]
+public struct ShelfDisplayGroup: Identifiable, Sendable {
+    public var id: UUID
+    public var items: [ShelfItem]
 
-    var isStack: Bool {
+    public var isStack: Bool {
         items.count > 1
     }
 }

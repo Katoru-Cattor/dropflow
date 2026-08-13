@@ -1,12 +1,12 @@
 import AppKit
 
-enum PasteboardReader {
+public enum PasteboardReader {
     /// Schemes accepted when a drop offers *only* plain text. Deliberately narrow: any wider and
     /// ordinary prose with a colon ("TODO: fix the parser") is stored as a mangled URL row, and the
     /// original spacing is gone for good.
     private static let plainTextURLSchemes: Set<String> = ["http", "https", "mailto", "ftp", "ftps"]
 
-    static func readItems(from pasteboard: NSPasteboard, imageDirectory: URL) -> [ShelfItem] {
+    public static func readItems(from pasteboard: NSPasteboard, imageDirectory: URL) -> [ShelfItem] {
         var results: [ShelfItem] = []
         let items = pasteboard.pasteboardItems ?? []
 

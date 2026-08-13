@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 
 /// The 26×24 row button, shared by both row views. `ShelfRootView` keeps its own 30×26 variant on
 /// purpose — different size, and it needs `ShelfIconButton`.

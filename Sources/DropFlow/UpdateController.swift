@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 
 // Update *notifier* for DropFlow — deliberately not a self-installer.
 //
@@ -187,15 +188,9 @@ final class UpdateController {
     }
 
     /// Numeric, component-wise. "0.10.0" beats "0.9.0"; equal versions are not newer.
+    /// Body lives in DropFlowCore.VersionCompare so a test target can link it.
     nonisolated static func isNewer(_ candidate: String, than current: String) -> Bool {
-        let lhs = candidate.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
-        let rhs = current.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
-        for index in 0..<max(lhs.count, rhs.count) {
-            let l = index < lhs.count ? lhs[index] : 0
-            let r = index < rhs.count ? rhs[index] : 0
-            if l != r { return l > r }
-        }
-        return false
+        VersionCompare.isNewer(candidate, than: current)
     }
 
     // MARK: - UI

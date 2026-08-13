@@ -1,33 +1,48 @@
 import AppKit
 
 extension Notification.Name {
-    static let shelfStoreDidChange = Notification.Name("DropFlowShelfStoreDidChange")
+    public static let shelfStoreDidChange = Notification.Name("DropFlowShelfStoreDidChange")
 }
 
 @MainActor
-final class ShelfStore {
-    private(set) var items: [ShelfItem] = []
-    private(set) var recentSnapshots: [ShelfSnapshot] = []
-    private(set) var selectedIDs: Set<UUID> = []
-    private(set) var dragMode: ShelfDragMode = .simplify
+public final class ShelfStore {
+    public private(set) var items: [ShelfItem] = []
+    public private(set) var recentSnapshots: [ShelfSnapshot] = []
+    public private(set) var selectedIDs: Set<UUID> = []
+    public private(set) var dragMode: ShelfDragMode = .simplify
 
     private static let dragModeDefaultsKey = "ShelfDragMode"
 
+    /// The one definition of how shelf.json is encoded. Tests read it from here rather than
+    /// hand-copying the configuration: a copy stays green while production drifts away from it, and
+    /// the whole point of those tests is to fail the day the on-disk format changes.
+    public enum ShelfCoders {
+        public static func makeEncoder() -> JSONEncoder {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            return encoder
+        }
+
+        public static func makeDecoder() -> JSONDecoder {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return decoder
+        }
+    }
+
     private let maxSnapshots = 10
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let encoder = ShelfCoders.makeEncoder()
+    private let decoder = ShelfCoders.makeDecoder()
     private let saveQueue = DispatchQueue(label: "com.dropflow.shelfstore.save", qos: .utility)
     private var pendingSave = false
     private var resolvedURLCache: [UUID: URL] = [:]
 
-    init() {
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder.dateDecodingStrategy = .iso8601
+    public init() {
         dragMode = ShelfDragMode(rawValue: UserDefaults.standard.string(forKey: Self.dragModeDefaultsKey) ?? "") ?? .simplify
     }
 
-    func load() {
+    public func load() {
         do {
             let data = try Data(contentsOf: persistenceURL)
             let persisted = try decoder.decode(ShelfPersistence.self, from: data)
@@ -74,7 +89,7 @@ final class ShelfStore {
         }
     }
 
-    func save() {
+    public func save() {
         let supportURL = appSupportURL
         let fileURL = persistenceURL
         let persistence = ShelfPersistence(activeItems: items, recentSnapshots: recentSnapshots)
@@ -93,7 +108,7 @@ final class ShelfStore {
     /// Enqueues a save and waits for it to land. Use at quit: `save()` alone returns before the
     /// write happens, so the process can exit first — two 0-byte atomic-write sidecars in the
     /// support directory are writes that started this way and never finished.
-    func saveNow() {
+    public func saveNow() {
         save()
         saveQueue.sync {}
     }
@@ -108,7 +123,7 @@ final class ShelfStore {
         }
     }
 
-    func addItems(from pasteboard: NSPasteboard) {
+    public func addItems(from pasteboard: NSPasteboard) {
         var newItems = PasteboardReader.readItems(from: pasteboard, imageDirectory: imageDirectoryURL)
         guard !newItems.isEmpty else { return }
         // PasteboardReader de-dupes only within one drop, so dropping the same file again tomorrow
@@ -133,14 +148,14 @@ final class ShelfStore {
         item.sourceURLString ?? item.inlineText ?? item.id.uuidString
     }
 
-    func remove(_ item: ShelfItem) {
+    public func remove(_ item: ShelfItem) {
         items.removeAll { $0.id == item.id }
         selectedIDs.remove(item.id)
         resolvedURLCache.removeValue(forKey: item.id)
         postChange()
     }
 
-    func remove(_ itemsToRemove: [ShelfItem]) {
+    public func remove(_ itemsToRemove: [ShelfItem]) {
         let ids = Set(itemsToRemove.map(\.id))
         items.removeAll { ids.contains($0.id) }
         selectedIDs.subtract(ids)
@@ -148,7 +163,7 @@ final class ShelfStore {
         postChange()
     }
 
-    func clearShelf() {
+    public func clearShelf() {
         captureRecentSnapshotIfNeeded()
         items = []
         selectedIDs.removeAll()
@@ -156,7 +171,7 @@ final class ShelfStore {
         postChange()
     }
 
-    func restore(snapshot: ShelfSnapshot) {
+    public func restore(snapshot: ShelfSnapshot) {
         captureRecentSnapshotIfNeeded()
         items = snapshot.items.map(resolveState(for:))
         selectedIDs.removeAll()
@@ -169,7 +184,7 @@ final class ShelfStore {
         postChange()
     }
 
-    func toggleSelection(for item: ShelfItem) {
+    public func toggleSelection(for item: ShelfItem) {
         if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
         } else {
@@ -178,17 +193,17 @@ final class ShelfStore {
         postChange(saveAfter: false)
     }
 
-    func selectOnly(_ item: ShelfItem) {
+    public func selectOnly(_ item: ShelfItem) {
         selectedIDs = [item.id]
         postChange(saveAfter: false)
     }
 
-    func selectOnly(_ items: [ShelfItem]) {
+    public func selectOnly(_ items: [ShelfItem]) {
         selectedIDs = Set(items.map(\.id))
         postChange(saveAfter: false)
     }
 
-    func setDragMode(_ mode: ShelfDragMode) {
+    public func setDragMode(_ mode: ShelfDragMode) {
         guard dragMode != mode else { return }
         dragMode = mode
         // Kept out of shelf.json on purpose: a new non-optional field in ShelfPersistence would make
@@ -197,7 +212,7 @@ final class ShelfStore {
         postChange(saveAfter: false)
     }
 
-    func itemsForDrag(startingWith item: ShelfItem) -> [ShelfItem] {
+    public func itemsForDrag(startingWith item: ShelfItem) -> [ShelfItem] {
         let resolvedItems = items.filter { $0.lastResolvedState != .missing }
         switch dragMode {
         case .simplify:
@@ -211,7 +226,7 @@ final class ShelfStore {
         }
     }
 
-    func itemsForDrag(startingWith group: ShelfDisplayGroup) -> [ShelfItem] {
+    public func itemsForDrag(startingWith group: ShelfDisplayGroup) -> [ShelfItem] {
         switch dragMode {
         case .simplify:
             return items.filter { $0.lastResolvedState != .missing }
@@ -220,7 +235,7 @@ final class ShelfStore {
         }
     }
 
-    func copyValue(for item: ShelfItem) {
+    public func copyValue(for item: ShelfItem) {
         var fileURL: URL?
         var text: String?
         if let url = resolveURL(for: item) {
@@ -246,7 +261,7 @@ final class ShelfStore {
         }
     }
 
-    func copyValues(for itemsToCopy: [ShelfItem]) {
+    public func copyValues(for itemsToCopy: [ShelfItem]) {
         var fileURLs: [NSURL] = []
         var texts: [String] = []
         for item in itemsToCopy {
@@ -277,7 +292,7 @@ final class ShelfStore {
 
     /// Breaks a multi-file drop back into ordinary rows: `displayGroups()` then emits them individually and
     /// every existing per-item behaviour applies unchanged.
-    func ungroup(_ group: ShelfDisplayGroup) {
+    public func ungroup(_ group: ShelfDisplayGroup) {
         let ids = Set(group.items.map(\.id))
         guard items.contains(where: { ids.contains($0.id) && $0.dropGroupID != nil }) else { return }
         items = items.map { item in
@@ -289,7 +304,7 @@ final class ShelfStore {
         postChange()
     }
 
-    func displayGroups() -> [ShelfDisplayGroup] {
+    public func displayGroups() -> [ShelfDisplayGroup] {
         var groupBuckets: [UUID: [ShelfItem]] = [:]
         for item in items {
             guard let groupID = item.dropGroupID else { continue }
@@ -314,7 +329,7 @@ final class ShelfStore {
         return groups
     }
 
-    func open(_ item: ShelfItem) {
+    public func open(_ item: ShelfItem) {
         if let url = resolveURL(for: item) {
             NSWorkspace.shared.open(url)
         } else if let text = item.inlineText, let url = URL(string: text), url.scheme != nil {
@@ -322,12 +337,12 @@ final class ShelfStore {
         }
     }
 
-    func reveal(_ item: ShelfItem) {
+    public func reveal(_ item: ShelfItem) {
         guard let url = resolveURL(for: item), url.isFileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    func zipSelectedOrAll() {
+    public func zipSelectedOrAll() {
         let selectedItems = items.filter { selectedIDs.contains($0.id) && $0.isFileBacked }
         let fileItems = selectedItems.isEmpty ? items.filter(\.isFileBacked) : selectedItems
         let urls = fileItems.compactMap(resolveURL(for:)).filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -343,7 +358,7 @@ final class ShelfStore {
         }
     }
 
-    func captureRecentSnapshotIfNeeded() {
+    public func captureRecentSnapshotIfNeeded() {
         guard !items.isEmpty else { return }
         let title = snapshotTitle(for: items)
         let snapshot = ShelfSnapshot(title: title, items: items)
@@ -352,7 +367,7 @@ final class ShelfStore {
         trimSnapshots()
     }
 
-    func resolveURL(for item: ShelfItem) -> URL? {
+    public func resolveURL(for item: ShelfItem) -> URL? {
         if let cached = resolvedURLCache[item.id] {
             // The memo lives for the whole process, so a file moved or deleted after it was cached kept
             // resolving to a path that no longer exists. Re-resolve from the bookmark in that case.
@@ -384,7 +399,7 @@ final class ShelfStore {
         resolvedURLCache.removeAll(keepingCapacity: true)
     }
 
-    func refreshResolvedStates() {
+    public func refreshResolvedStates() {
         invalidateURLCache()
         items = items.map { resolveState(for: followMovedFile($0)) }
         postChange()

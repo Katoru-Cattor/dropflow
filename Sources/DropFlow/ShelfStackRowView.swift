@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 
 @MainActor
 final class ShelfStackRowView: NSView, NSDraggingSource {

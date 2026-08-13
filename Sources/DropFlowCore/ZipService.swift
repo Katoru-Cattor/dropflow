@@ -1,7 +1,7 @@
 import Foundation
 
-enum ZipService {
-    static func createZip(from urls: [URL]) async throws -> URL {
+public enum ZipService {
+    public static func createZip(from urls: [URL]) async throws -> URL {
         let outputDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let formatter = DateFormatter()
@@ -21,7 +21,7 @@ enum ZipService {
             // as zip's own -x exclude flag — that bug exited 0 with the file silently missing from
             // the archive. Verified on Info-ZIP 3.0: it must come *after* the archive name ("can't
             // use -- before archive name"), and it does not leak into the stored member names.
-            process.arguments = ["-r", outputURL.path, "--"] + relPaths
+            process.arguments = Self.zipArguments(archivePath: outputURL.path, relativePaths: relPaths)
             // Both streams to one handle: zip reports most failures on *stdout* ("Nothing to do!",
             // "Could not create output file") and only some warnings on stderr, so capturing stderr
             // alone leaves the alert naming no reason. One handle means one shared file offset, so
@@ -68,7 +68,15 @@ enum ZipService {
         }
     }
 
-    private static func commonParent(for urls: [URL]) -> URL {
+    /// The argv `createZip` hands to /usr/bin/zip, extracted only so a test can drive the real
+    /// argument construction. A member whose name begins with "-" is why the "--" is here: without
+    /// it zip parses "-x.csv" as its own exclude flag, exits **0**, and silently leaves the file out
+    /// of the archive — a status-code assertion cannot see that, only the archive contents can.
+    public static func zipArguments(archivePath: String, relativePaths: [String]) -> [String] {
+        ["-r", archivePath, "--"] + relativePaths
+    }
+
+    public static func commonParent(for urls: [URL]) -> URL {
         let pathComponents = urls.map { $0.deletingLastPathComponent().standardizedFileURL.pathComponents }
         guard var common = pathComponents.first else {
             return FileManager.default.homeDirectoryForCurrentUser
@@ -86,7 +94,7 @@ enum ZipService {
         return NSURL.fileURL(withPathComponents: common) ?? URL(fileURLWithPath: "/")
     }
 
-    private static func relativePath(from baseURL: URL, to url: URL) -> String {
+    public static func relativePath(from baseURL: URL, to url: URL) -> String {
         let baseComponents = baseURL.standardizedFileURL.pathComponents
         let targetComponents = url.standardizedFileURL.pathComponents
         let relativeComponents = targetComponents.dropFirst(baseComponents.count)

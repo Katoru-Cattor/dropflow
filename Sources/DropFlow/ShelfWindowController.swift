@@ -1,4 +1,5 @@
 import AppKit
+import DropFlowCore
 
 @MainActor
 final class ShelfWindowController: NSWindowController {
@@ -90,20 +91,7 @@ final class ShelfWindowController: NSWindowController {
         // so the old width targets of 332/360 never matched and the early-out never fired: every
         // store change ran an animated resize that changed nothing, and forcing the width back to
         // 332 blocked ~73 ms before layout pushed it to 367 again.
-        let targetContentHeight: CGFloat
-        if store.items.isEmpty {
-            targetContentHeight = 200
-        } else if store.dragMode == .simplify {
-            let rows = max(1, Int(ceil(Double(min(store.items.count, 12)) / 4.0)))
-            let contentHeight = 76 + CGFloat(rows) * 58 + CGFloat(max(rows - 1, 0)) * 10 + 34
-            targetContentHeight = min(max(contentHeight, 188), 330)
-        } else {
-            let rows = max(1, min(store.items.count, 8))
-            // 74 must match the row's minimum height in ShelfRootView; 64 clipped the last row by
-            // 10 pt per row.
-            let contentHeight = 76 + CGFloat(rows) * 74 + CGFloat(max(rows - 1, 0)) * 8 + 24
-            targetContentHeight = min(max(contentHeight, 200), 440)
-        }
+        let targetContentHeight = PanelMetrics.contentHeight(itemCount: store.items.count, mode: store.dragMode)
 
         let currentContentHeight = window.contentView?.bounds.height ?? 0
         guard abs(currentContentHeight - targetContentHeight) > 0.5 else { return }
